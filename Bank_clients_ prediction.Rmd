@@ -1,0 +1,423 @@
+---
+title: "TD4 Econométrie"
+author: "Pelé, Lenoir"
+date: ""
+lang: fr
+output: 
+ rmdformats::readthedown:
+   gallery: no
+   highlight: tango
+   lightbox: yes
+   self_contained: yes
+editor_options:
+  chunk_output_type
+  
+---
+```{r setup}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(ggpubr)
+library(stargazer)
+library(grid)
+library(gridExtra)
+library(dplyr)
+library(kableExtra)
+library(questionr)
+library(lubridate)
+library(car)
+library(lmtest)
+library(dummies)
+library(orcutt)
+library(dygraphs)
+library(xts)
+```
+
+```{r kable_plus}
+  kable_plus<-function(tab, transp = FALSE, digits = 2, titre=NULL,...){
+      if(transp){
+        tab %>% t() %>% kable(caption=titre, digits = digits, booktabs=TRUE,...) %>%
+          kable_styling(full_width = F, position = "center",bootstrap_options = c("striped"))  
+      } else {
+        tab %>% kable(caption=titre, digits = digits, booktabs=TRUE,...) %>%
+          kable_styling(full_width = F, position = "center",bootstrap_options = c("striped"))
+      }
+    }
+```
+
+```{r}
+data<-read.csv("CrowdCounterBDD.csv", head=T, sep=";")
+```
+
+## Étude statistique
+
+### Création d'une base de données spécifique à l'étude
+
+Nous avons décidé de créer une base de données spécifique pour l'étude statistique. Ainsi, nous avons passé en facteur les variables an, vacances, joursem et mois pour rendre l'étude plus facile. 
+
+
+```{r}
+data$an=as.factor(data$an)
+data$vacances=as.factor(data$vacances)
+data$mois=as.factor(data$mois)
+data$joursem<-ordered(data$joursem,levels=c("Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi"))
+str(data)
+summary(data) 
+```
+
+
+### Test de moyenne pour la variable "vacances"
+
+```{r}
+moy.test.auto<-function(x,y){
+   test <- t.test(x~ y)
+   output <- c(test$estimate, test$conf.int[1], test$conf.int[2], test$p.value)
+   names(output) <- c(names(test$estimate),"Borne inf. de l'IC à 95% de la diff.","Borne sup. de l'IC à 95% de la diff.", "p-value")
+   return(output)
+ }
+
+moy.test.auto.var<-function(x,y){  if (var.test(x~ y)$p.value < 0.05){
+    test <- t.test(x~ y, var.equal = FALSE)
+  } else {
+    test <- t.test(x~ y, var.equal = TRUE)
+  }
+   output <- c(test$estimate, test$conf.int[1], test$conf.int[2], test$p.value)
+   names(output) <- c("Moyenne affluence hors vacances", "Moyenne affluence pendant les vacances","Borne inf. de l'IC à 95% de la diff.","Borne sup. de l'IC à 95% de la diff.", "p-value")
+   return(output)
+ }
+
+moy.test.auto.var.df <- function(df, y){
+  sapply(df, moy.test.auto.var, y)
+}
+
+data %>% select(nb) %>%
+  moy.test.auto.var.df(data$vacances) %>%kable_plus(titre = "Test de moyenne sur vacances")
+
+```
+
+Nous rejetons l'hypothèse que la moyenne ne change pas pendant les vacances. Alors, la différence de moyenne d'affluence entre ces deux périodes est significativement élevée. Donc nous pouvons déjà supposer que nous conserverons la variable "vacances" dans notre modèle de régression.  
+
+### Graphiques 
+
+```{r}
+gg1<-ggplot(data=data)+aes(x=an, y=nb)+
+    geom_boxplot(fill="#E3E3E3",color="#59CFA3")+
+    stat_summary(aes(label=..y..),fun = function(x) round(median(x),3),
+                 geom="text", size=3, color="red", vjust=-0.9) +
+    stat_summary(fun.y=median, geom="point", shape=18, size=3.5, color="#595959", fill="black")+theme_minimal()+
+  labs(title = "Affluence en fonction des l'année")
+gg2<-ggplot(data=data)+aes(x=mois, y=nb)+
+    geom_boxplot(fill="#E3E3E3",color="#59CFA3")+
+    stat_summary(aes(label=..y..),fun = function(x) round(median(x),3),
+                 geom="text", size=3, color="red", vjust=-0.9) +
+    stat_summary(fun.y=median, geom="point", shape=18, size=3.5, color="#595959", fill="black")+ theme_minimal()+
+  labs(title = "Affluence en fonction du mois")
+grid.arrange(gg1,gg2, ncol=2)
+```
+
+* De 2010 à 2018, la médiane de l'affluence au guichet augmente. Cependant, nous observons également des fluctuations de celle-ci. En effet, elle baisse de 2010 à 2012 pour ensuite augmenter fortement en 2013, par la suite elle est reste stable jusqu'en 2018. De ce fait, nous observons un changement d'allure en 2013.
+
+* Dans le deuxième graphique, nous observons une forte affluence en septembre. Effectivement, la médiane de celle-ci est fortement supérieure aux autres. L'affluence des mois d'août et d'octobre est légèrement supérieure aux autres mois. La variable "mois" est intéressante dans un modèle au vu des disparités d'affluence qui existe. 
+
+```{r}
+mean<-data %>% group_by(mois,an) %>% mutate(max_nb=mean(nb,na.rm = T)) %>% select(max_nb)
+mean<-mean[,-c(1,2)]
+data<-cbind(data,mean)
+
+attach(data)
+data<-rename.variable(data, "max_nb", "moyenne")
+
+ggplot(data=data)+
+  aes(y=moyenne,x=mois,group=an)+
+  geom_line(aes(color=an),size=1)+ 
+  scale_color_manual(values =c("#FFDB6D", "#C4961A","purple" , 
+                "#D16103", "red", "#52854C", "#4E84C4", "#293352","black"))+
+  theme_minimal()+
+  labs(title = "Moyenne d'affluence en fonction des mois et  des années")
+
+```
+
+Ce graphique montre la moyenne d'affluence par mois en fonction des années. Ainsi nous pouvons constater que le mois de septembre à la fin des vacances d'été est le mois où la moyenne d'affluence est la plus élevée. Nous remarquons également que l'affluence est plus élevée d'années en années. Il met surtout en évidence que l'augmentation de l'affluence en septembre est plus importante en 2013 que pour les autres années. 
+Globalement, la moyenne de l'affluence fluctue dans le temps. Ainsi, nous pensons qu'il faudrait garder ces variables dans notre régression pour prédire au mieux l'affluence prochaine. 
+
+```{r}
+gg4<-ggplot(data=data)+aes(x=joursem, y=nb)+
+    geom_boxplot(fill="#E3E3E3",color="#59CFA3")+
+    stat_summary(aes(label=..y..),fun = function(x) round(median(x),3),
+                 geom="text", size=3, color="red", vjust=-0.9) +
+    stat_summary(fun.y=median, geom="point", shape=18, size=3.5, color="#595959", fill="black")+ theme_minimal()
+gg5<-ggplot(data=data)+aes(x=vacances, y=nb)+
+    geom_boxplot(fill="#E3E3E3",color="#59CFA3")+
+    stat_summary(aes(label=..y..),fun = function(x) round(median(x),3),
+                 geom="text", size=3, color="red", vjust=-0.9) +
+    stat_summary(fun.y=median, geom="point", shape=18, size=3.5, color="#595959", fill="black")+
+  theme_minimal()
+gg6<-ggplot(data=data)+
+  aes(x=jour,y=nb,color=joursem)+
+  geom_point()+theme_minimal()+
+  labs(title = "Affluence en fonction du jour du mois et du jour de la semaine")
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(2, 2)))
+define_region <- function(row, col){
+  viewport(layout.pos.row = row, layout.pos.col = col)}
+print(gg4, vp=define_region(2, 2))
+print(gg5, vp = define_region(2, 1))
+print(gg6, vp = define_region(1, 1:2))
+```
+
+* Le premier graphique illustrant l'affluence selon le jour de la semaine et le jour du mois, montre que celle-ci est plus importante en début et en fin de mois. Globalement, le lundi connaît plus d'affluence que le samedi. Ce qui paraît logique puisque les banques sont généralement seulement ouvertes le samedi matin et toute la journée le lundi. Ce graphique illustre une possible relation convexe entre l'affluence et les jours. 
+
+* Le graphique mettant en relation seulement les jours de la semaine et l'affluence confirme ce qui était pressenti dans le précédent graphique. En effet la médiane de l'affluence est supérieure le lundi que les autres jours. Ainsi, entre le lundi et le samedi la médiane diminue. 
+
+* Le dernier graphique témoigne d'une baisse d'influence pendant les vacances scolaires. En effet, la médiane est plus faible en vacances.
+
+## Régression
+
+```{r}
+client<-read.csv("CrowdCounterBDD.csv", head=T, sep=";")
+client$jourfer<- 0
+client[c(1,80,102,107,110,118,161,254,260,299,304,400,432,440,466,492,558,566,603,693,711,
+         716,723,731,771,797,863,908,913,989,1014,1019,1027,1100,1166,1173,1210,1215,1308,
+        1316,1321,1338,1346,1375,1402,1468,1475,1512,1517,1597,1618,1623,1627,1635,1677,
+        1704,1778,1815,1820,1893,1925,1933,1983,2009,2075,2083,2216,2227,2232,2246,2254,
+        2287,2313,2379,2387,2424,2428,2505,2539,2533,2534,2542),9]<- 1
+client$afterv<-0
+client[c(44,91,203,256,304,358,405,509,559,610,669,715,813,715,813,868,917,965,1012,1114,
+         1167,1218,1272,1318,1416,1468,1519,1573,1624,1717,1770,1821,1863,1910,2023,2076,
+         2128,2174,2221,2329,2382,2433,2487,2536),10]<-1
+client$date=as.Date(client$date,format="%d/%m/%Y")
+client$vacances=as.factor(client$vacances)
+client$an=as.factor(client$an)
+client$an <- relevel(client$an, ref = "2013")
+client$jour[client$jour==31]<-1
+client$jour=as.factor(client$jour)
+client$joursem <- relevel(client$joursem, ref = "Lundi")
+client$mois=as.factor(client$mois)
+client$mois <- relevel(client$mois, ref = 9)
+client$joursem=as.factor(client$joursem)
+client$jourfer=as.factor(client$jourfer)
+client$afterv=as.factor(client$afterv)
+attach(client)
+```
+
+* Pour prédire au mieux notre modèle, nous avons voulu créer une variable jour férié, celle-ci vaut un le lendemain d'un jour férié. Ainsi, nous pouvons prendre en compte l'augmentation de l'affluence après un jour férié dans notre modèle.
+* Nous avons également créé une variable "afterv" pour prendre en compte l'augmentation de l'affluence au retour des vacances scolaires. 
+* Comme tous les mois n'ont pas la même taille, nous décidons de mettre le jour 31 avec le jour 30. Ceci va permettre de rééquilibrer les mois pour une meilleure estimation.
+
+Pour ceci, nous allons commencer par un modèle simple:
+$$nb = \beta_0 +\beta_1 joursem_t + \beta_2 jour_t+ \beta_3 an_t+ \beta_4 mois_t+ \beta_5 vacances_t + \beta_6 jourfer+$$
+$$\beta_7 afterv_t + \varepsilon$$
+
+```{r}
+reg<-lm(nb~joursem+jour+an+mois+vacances+jourfer+afterv,data=client)
+summary(reg)
+```
+
+Nous pouvons constater un bon $R^2$ (0.8229). Tous nos coefficients sont significatifs, nous pouvons donc expliquer notre modèle correctement. 
+Avec ce modèle simple, nous voyons déjà que l'affluence est plus importante au début de semaine, surtout le lundi, mais aussi que le 1er jour du mois est plus important que le reste des autres jours. Pour la variable "mois", le mois de septembre rencontre une affluence beaucoup plus importante que les autres et pour celle des années, on constate que plus les années passent, plus l'affluence est élevée. 
+
+En créant une variable ("jm") de la moyenne d'affluence qui met en relation les jours et les mois, nous avons pu créer un second modèle. Celui-ci permet de mettre une interaction entre ces deux variables. 
+Il est le suivant: 
+$$nb= \beta_0 + \beta_1 jm_t + \beta_2 an_t + \beta_3 joursem_t + \beta_4 vacances_t + \beta_5 jourfer_t +\beta_6 afterv_t +\varepsilon$$
+
+```{r}
+jm<-client %>% group_by(jour,mois) %>% mutate(jm=mean(nb,na.rm = T)) %>% select(jm)
+jm<-jm[,-c(1,2)]
+client<-cbind(client,jm)
+
+regjm<-lm(nb~jm+an+joursem+vacances+jourfer+afterv,data=client)
+summary(regjm)
+```
+
+Nous trouvons un $R^2$ ajusté plus élevé. Cependant, quand nous avons testé cette régression dans notre prédiction, nous avons pu observer des valeurs prédites plus loin de la réalité. Ainsi, nous avons décidé de garder une régression sans cette variable. 
+
+
+```{r}
+par(mfrow=c(2,2))
+plot(reg)
+```
+
+Les résidus ne varient pas de manière constante selon les graphiques. De plus, nous pouvons observer des valeurs aberrantes. Testons maintenant la variance des résidus et regardons si celle-ci est constante : 
+
+```{r}
+ncvTest(reg)
+```
+
+Il y a donc de l'hétéroscédasticité en partie causé par l'autocorrélation. Pour commencer nous allons enlever les valeurs aberrantes pour obtenir un modèle de régression plus fiable.
+
+Pour la regression suivante,la variable expliquée "nb" est modifiée et passée logarithme. 
+$$log(nb)=\beta_0 +\beta_1 joursem_t + \beta_2 jour_t+ \beta_3 an_t+ \beta_4 mois_t+ \beta_5 vacances_t +$$
+$$\beta_6 jourfer +\beta_7 afterv_t +\varepsilon$$
+
+```{r}
+client$lnb<-log(nb)
+client<-client[-c(2175,352,1869,2505,2050,1206,1511,2460,2459,1986,2641,2461,907,
+                  602,37,298,1814,48,47,2458,1474,1356,1264,2226,1209,1566,1565,912,2477,
+                  350,1815,49),]
+reg1<-lm(lnb~joursem+jour+mois+an+jourfer+vacances+afterv,data=client)
+```
+
+Nous décidons de retirer des valeurs à notre modèle pour qu'il soit le meilleur possible. Beaucoup de valeurs ont été retiré mais comme nous partons avec un grand nombre de données, cela n'a pas beaucoup d'influence. 
+
+```{r}
+summary(reg1)
+```
+
+Tout d'abord, nous ne pouvons pas dire que notre $R^2$ est meilleur car nous n'avons plus la même variable expliquée mais celui-ci est plus ajusté. Tous les coefficients sont significatifs. 
+Nous estimons que ce modèle est cohérent car nous trouvons toujours que l'affluence d'un lundi 1er septembre sera toujours plus élevée que tous les autres jours d'une année. 
+L'affluence est plus faible pendant les vacances scolaires. Elle est aussi plus élevée un lendemain de jour férié et au retour des vacances.                        
+
+
+```{r}
+durbinWatsonTest(reg1)
+```
+
+Le test de Durbin-Watson prouve qu'il existe de l'autocorrélation dans notre modèle. Essayons maintenant de la corriger. 
+
+```{r}
+reg1bis<-cochrane.orcutt(reg1)
+summary(reg1bis)
+```
+
+Nous pouvons alors remarquer que la Durbin-Watson statistique passe de 0,84 à 2,19 : l'autocorrélation est corrigée dans notre modèle. 
+Cependant, nous avons décidé de ne pas corriger l'autocorrélation dans notre modèle car nous trouvons que notre modèle est moins bien ajusté et que certains coefficients ne sont plus significatifs. 
+
+```{r}
+bptest(reg1)
+```
+
+Cependant, il y a de l'hétéroscédasticité que nous allons essayer de corriger. 
+
+```{r}
+client$resi<-reg1$residuals
+varfunc.ols <- lm(log(resi^2) ~mois:jour+an+jourfer*vacances:joursem+
+                    joursem:afterv,data=client)
+client$varfunc <- exp(varfunc.ols$fitted.values)
+reg2<- lm(lnb~joursem+jourfer+vacances+an+jour+mois+afterv, weights = 1/sqrt(varfunc), data =client)
+summary(reg2)
+```
+
+Après correction de l'heterosedasticité, nous trouvons un modèle qui nous montre les mêmes résultats que les précédents. Cependant notre $R^2$ ajusté est bien supérieur aux autres car il atteint presque 0,9.
+Nous décidons de conserver ce modèle car pour nous, celui-ci estime le mieux notre base de données et on peut constater que tous nos coefficients sont significatifs. 
+
+* Pour la variable "jour", l'affluence est plus importante le 1er du mois et moins importante au 18ème jour. 
+
+* Pour "joursem", le lundi est la journée la plus affluente, à contrario, le samedi l'est bien moins. 
+
+* Pour les mois, septembre est le mois où l'affluence est la plus importante avec une différence très importante avec les autres. Alors que les mois de février et juin sont les moins affluents.
+
+* Pour "vacances", "jourfer" et "afterv", l'affluence est plus importante en période hors vacances scolaires, au retour de celles-ci et le lendemain d'un jour férié.
+
+```{r}
+par(mfrow=c(2,2))
+plot(reg2)
+```
+
+```{r}
+bptest(reg2)
+ncvTest(reg2)
+```
+
+Malgré la correction que nous avons effectuée, il reste de l'hétéroscédasticité. Cependant, nous avons un meilleur $R^2$.En effet,la variance des résidus n'est pas constante.
+Néanmoins sur les graphiques, nous pouvons observer que celle-ci est plus constante que précédemment. Ainsi, nous avons corrigé une partie de l'hétéroscédasticité.
+
+##Prédiction
+
+Pour prédire nos données, nous allons utiliser la deuxième base de données. Celle-ci possède que deux variables : la date et les valeurs à prédire. 
+```{r}
+data2<-read_xlsx("CrowdCounterNEWdataBIS.xlsx")
+attach(data2)
+data2 <- rename.variable(data2, "Date", "date")
+data2<-data2 %>%
+        arrange(date) %>%
+        mutate(an=year(date),
+               mois=month(date),
+               jour=day(date))
+               
+data2$joursem<-rep(c("Vendredi", "Samedi", "Lundi","Mardi" ,"Mercredi", "Jeudi"), 
+                   length.out=41)
+data2[38:41,6]<-c("Lundi","Mardi","Mercredi","Jeudi")
+data2$vacances<-1
+data2$vacances[c(1:31)]<-0
+data2$jourfer<-0
+data2$jourfer[c(37,38)]<-1
+data2$afterv<-0
+```
+Nous avons donc commencé par remplir notre base de données en décomposant le jour, le mois et l'année. Nous y avons également rajouté les jours de la semaine, les vacances, les lendemains de jour férié et les retours de vacances, tout comme dans la première base. 
+
+```{r}
+jour=c(data2$jour)
+mois=c(data2$mois)
+an=c(data2$an)
+joursem=c(data2$joursem)
+vacances=c(data2$vacances)
+jourfer=c(data2$jourfer)
+afterv=c(data2$afterv)
+
+ab<-data.frame(cbind(jour,mois, an,joursem,jourfer,vacances,afterv))
+
+data2 <- data2 %>% cbind(exp(predict(reg2,ab, interval="prediction", level=0.95)))
+
+```
+
+Ainsi, nous avons pu prédire les valeurs grâce à la régression que nous avons conservé. 
+
+```{r}
+attach(data2)
+data2 <- rename.variable(data2, "fit", "Prédiction")
+predict<-data2[,c(1,2,10)]
+predict  %>% kable_plus(titre = "Tableau des prédictions")
+```
+
+En observant le tableau, on voit que nos valeurs sont assez bien prédites, il y a peu de différence entre les valeurs que nous devons trouver et les valeurs prédites. 
+
+Pour plus de lisibilité, nous allons les lire sur des graphiques. 
+Le premier graphique permet d'oberver la différence entre les valeurs observées et les valeurs prédites. Les deux lignes se confondent, ainsi notre modèle permet de bien prédire l'affluence en juin et en juillet 2018.
+Le deuxième représente quant à lui le rapport entre les valeurs réelles et les prédictions. C'est-à-dire que plus un point est proche de 1, plus la valeur prédite est juste. 
+
+```{r}
+attach(data2)
+datagraph <- data.frame(
+  time=seq(from=Sys.Date(), to=Sys.Date(), by=1 ), 
+  `Valeurs réelles`,Prédiction)
+attach(datagraph)
+time=as.Date(data2$date,format="%d/%m/%Y")
+don=xts( x=datagraph[,-1], order.by=time)
+dygraph(don,main="Prédiction du nombre de client de juin et juillet 2018",
+        xlab="Date", ylab="Nombre de client") 
+```
+
+Sur celui-ci, nous voyons que les deux courbes suivent la même tendance et pour la plupart des jours, elles sont presque l'une sur l'autre. 
+Seuls les deux derniers jours de juin sont un peu plus éloignés mais on constate que les deux courbes restent similaires. 
+
+```{r}
+data2$rapport<-data2$`Valeurs réelles`/data2$Prédiction
+ggplot(data=data2)+
+  aes(x=date)+
+  geom_point(aes(y=rapport,color=rapport),na.rm=T)+
+  theme_minimal() + theme(legend.position = "none")+
+  geom_hline(yintercept=c(0.9,1,1.1), linetype="dashed")+
+  labs(title = "Rapport entre les valeurs et les prédictions")
+```
+
+Nous constatons que la majorité des points sont compris dans l'intervalle [0,9;1,1], c'est-à-dire que les points prédits sont généralement 10% au-dessus ou en-dessous de la valeur observée. 
+
+```{r}
+SCR<-data2$Prédiction-data2$`Valeurs réelles`
+SCR<-SCR^2
+SCR<-sum(SCR)
+
+SCT<-data2$`Valeurs réelles`-mean(data2$`Valeurs réelles`)
+SCT<-SCT^2
+SCT<-sum(SCT)
+
+1-(SCR/SCT)
+
+
+```
+
+En appliquant la formule "1- SCR/SCT", cela nous donne le $R^2$ de la nouvelle base de données et nous permet de savoir si nos valeurs sont bien prédites. Au vu de cette valeur, nous pouvons en déduire que nos valeurs sont assez bien prédites mais si cela est encore améliorable. 
