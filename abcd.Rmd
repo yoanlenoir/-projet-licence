@@ -1,0 +1,474 @@
+---
+title: "Devoir Maison"
+author: "Mousalli, Lenoir"
+date: ""
+lang: fr
+output: 
+ rmdformats::readthedown:
+   gallery: no
+   highlight: tango
+   lightbox: yes
+   self_contained: yes
+editor_options:
+  chunk_output_type
+   
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(stargazer)
+library(kableExtra)
+library(data.table)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(car)
+library(lmtest)
+library(rmdformats)
+require(corrplot)
+library(psych)
+library(sandwich)
+```
+
+```{r kable_plus}
+
+  kable_plus<-function(tab, transp = FALSE, digits = 2, titre=NULL,...){
+      if(transp){
+        tab %>% t() %>% kable(caption=titre, digits = digits, booktabs=TRUE,...) %>%
+          kable_styling(full_width = F, position = "center",bootstrap_options = c("striped"))  
+      } else {
+        tab %>% kable(caption=titre, digits = digits, booktabs=TRUE,...) %>%
+          kable_styling(full_width = F, position = "center",bootstrap_options = c("striped"))
+      }
+    }
+```
+
+## Etude de la base de donnée
+Avant de créer nos modèles économétriques, nous décidons de faire une étude statistique détaillée, pour nous aider à choisir quel modèle sera meilleur. 
+```{r}
+data<-read.csv("BudgetFood.csv", head=T, sep=",")
+data<-data[,-1]
+data<-data[!data$wfood==0,]
+food =data
+```
+Nous avons décidé de retirer la première variable car elle n'est d'aucune utilité. Nous supprimons également toutes les observations où la variable "wfood" est égale à 0. 
+Nous créons deux data frame, l'un pour notre étude statistique et un deuxième pour les questions à répondre
+
+
+```{r}
+colnames(data) 
+head(data, n=10)
+tail(data)
+str(data)
+data$size=as.factor(data$size)
+data$town=as.factor(data$town)
+summary(data)
+data=na.omit(data)
+food=na.omit(food)
+attach(data)
+```
+* Nous pouvons observer qu'il ne manque aucune valeur à la base de données. On décide de passer les variables "town" et "size" en facteur car cela nous semble plus logique pour l'étude de nos données. 
+* En observant notre sommaire, on s'aperçoit qu'il existe une valeur "NA". Nous décidons de la retirer car nous la trouvons abérente: la personne n'a pas renseigné son sexe, possède un ménage de 37 personnes à seulement 20 ans. 
+
+## Etude des variables
+
+### Variables quantitatives
+
+Pour commencer cette étude, nous allons créer un sommaire de ces variables. Pour cela, nous créons une base de données avec seulement les variables quantitatives. 
+```{r}
+data2<-data[,c(1,2,3)]
+summary1<-sapply(data2, is.numeric)
+T1=data2[,summary1] 
+f<-function(T1) c(Min=min(T1),Max=max(T1),Moyenne=mean(T1),
+                        Mediane=median(T1),Ecart.type=sd(T1))
+sum1<-setDT(T1)[,sapply(.SD, f)]
+sum1 %>% kable_plus(transp = T, titre = "Sommaire des variables quantitatives")
+```
+* Nous pouvons constater que certains ménages utilisent presque 0% de leur dépense pour l'alimentation et d'autres presque 100%. Mais nous observons que la médiane et la moyenne sont très proches : autour de 35-40% des dépenses allouées à l'alimentation. 
+* Pour la variable totexp, on s'aperçoit que la médiane et la moyenne sont un peu plus éloignés. On constate que la moyenne est bien au-dessus de la médiane. Nous pouvons donc en déduire que certains ménages dépensent beaucoup plus que les autres mais ils sont très peu, ce qui fait augmenter la moyenne mais pas la médiane. 
+
+Nous allons donc continuer cette étude par la représentation des variables quantitatives.
+
+```{r}
+gg1<-ggarrange(
+  ggplot(data=data)+
+    aes(x=totexp,y=wfood)+
+    geom_point(color="blue")+
+    geom_smooth(method = "lm", color="red")+
+    lims(y=c(0,1))+
+    theme_grey(),
+  ggplot(data=data)+
+    aes(x=totexp)+
+    geom_histogram(aes(y=(..density..)),bins = 10,color="blue",fill="lightgrey")+
+    geom_density(alpha=0.6, color="red",size=1)
+)
+annotate_figure(gg1,top=text_grob("Etude de la variable totexp"))
+
+gg2<-ggarrange(
+  ggplot(data=data)+
+    aes(x=wfood)+
+    geom_histogram(aes(y=(..density..)),bins = 10,color="blue",fill="lightgrey")+
+    geom_density(alpha=0.6,color="red", size=1),
+  ggplot(data=data)+
+    aes(x=age)+
+    geom_histogram(aes(y=(..density..)),bins = 10,color="blue",fill="lightgrey")+
+    geom_density(alpha=0.6,color="red",size=1)
+)
+annotate_figure(gg2,top=text_grob("distribution des variables wfood et age"))
+```
+
+* Pour la première partie, cela représente la variable totexp. Nous avons représenté sa densité et à coté, sa répartition en fonction de "wfood". Pour sa densité, nous voyons un très fort pic dès le début car une minorité des ménages dépensent beaucoup, ce qui va aplatir le graphique et c'est ce qui va créer le pic. On peut constater sur l'autre graphique, une fonction décroissante de "totexp" en fonction de "wfood", ce qui nous dit que plus les dépenses augmentent, plus la part allouée à l'alimentation diminue. 
+* Pour la deuxième partie, nous avons décidé de représenter la densité de "wfood" et de l'âge. On constate que les deux variables suivent sensiblement une loi normale. Elles sont assez bien équilibrées. 
+
+### Variables qualitatives
+
+Nous allons donc maintenant représenter chaque variable qualitative par leur répartition et le pourcentage re répondant par catégorie. 
+
+```{r}
+gg3<-ggarrange(
+  ggplot(data=data)+aes(y=size, x=wfood)+
+    geom_boxplot(fill="lightgrey",color="blue")+
+    geom_vline(aes(xintercept=median(wfood[size])), color="#FC4E07",linetype="dashed")+
+    theme_minimal(),
+  ggplot(data=data)+ aes(x=size)+
+  geom_bar(aes(y=(..count..)*100/sum(..count..)),
+           position = position_dodge(),fill="lightgrey")+
+    labs(y="Pourcentage")+ theme_minimal())
+annotate_figure(gg3,top=text_grob("Representation de la variable size"))
+```
+
+* Si nous possédions que le premier graphique, nous pourrions trouver bizarre la médiane générale de la variable "size" car quand on regarde toutes les médianes par nombre de personne dans le ménage, on s'aperçoit que la médiane générale n'est pas très équilibrée.
+* En voyant le deuxième graphique, on constate que la plupart des personnes qui ont répondu sont entre 1 et 6 personne(s) dans le ménage. Si on regarde maintenant le premier graphique en prenant en compte que les boxplots de 1 à 6, on s'aperçoit que la médiane générale est plus logique.
+
+```{r}
+gg4<-ggarrange(ggplot(data=data)+aes(x=town, y=wfood)+
+    geom_boxplot(fill="lightgrey",color="blue")+
+    stat_summary(aes(label=..y..),fun = function(x) round(median(x),3),
+                 geom="text", size=4, color="red", vjust=-0.9) +
+    stat_summary(fun.y=median, geom="point", shape=18, size=3.5, color="red", fill="red")
+    + theme_minimal(),
+  ggplot(data=data)+ aes(x=town)+
+  geom_bar(aes(y=(..count..)*100/sum(..count..)),
+           position = position_dodge(),fill="lightgrey")+
+    labs(y="Pourcentage")+
+  geom_text(aes(label =scales::percent((..count..)/sum(..count..)),   
+                y= ((..count..)*100/sum(..count..))), stat="count", 
+            vjust = 1.5,position = position_dodge(0.9),color="red")+
+    theme_minimal())
+annotate_figure(gg4,top=text_grob("Representation de la variable town"))
+```
+
+Pour la variable "town", on s'aperçoit que presque une personne sur 2 interrogés venait d'une ville de taille 4. On constate également que plus un ménage habite dans une petite ville, plus la part des dépenses allouée à l'alimentation est forte. On peut supposer que town est une fonction décroissante de wfood. 
+
+```{r}
+gg5<-ggarrange(ggplot(data=data)+aes(x=sex, y=wfood)+
+    geom_boxplot(fill="lightgrey",color="blue")+
+    stat_summary(aes(label=..y..),fun = function(x) round(median(x),3),
+                 geom="text", size=4, color="red", vjust=-0.9) +
+    stat_summary(fun.y=median, geom="point", shape=18, size=3.5, color="red", fill="red")
+    + theme_minimal(),
+  ggplot(data=data)+ aes(x=sex)+
+  geom_bar(aes(y=(..count..)*100/sum(..count..)),
+           position = position_dodge(),fill="lightgrey")+
+    labs(y="Pourcentage")+
+  geom_text(aes(label =scales::percent((..count..)/sum(..count..)),   
+                y= ((..count..)*100/sum(..count..))), stat="count", 
+            vjust = 1.5,position = position_dodge(0.9),color="red")+
+    theme_minimal())
+annotate_figure(gg5,top=text_grob("Representation de la variable sex"))
+```
+
+
+* On constate au premier abord que les hommes ont largement plus répondu que les femmes. Mais on peut voir que la différence entre les hommes et les femmes n'est pas grande.
+* Les hommes ont une proportion à consommer légèrement plus basse que les femmes mais pas significativement. 
+*On peut déjà supposer que le coefficient de "sex" ne sera pas significatif. 
+
+### Corrélation
+
+Dans cette nouvelle partie, nous allons voir s'il existe de la corrélation entre deux variables. Sans cela, nos modèles pourraient être complétement faussés. 
+
+```{r}
+corrplot(cor(data2),type="lower",tl.srt=45)
+mcorr<-round(cor(data2),2)
+mcorr[upper.tri(mcorr)]<-" "
+mcorr %>% kable_plus(titre="Matrice de corrélation")
+```
+
+Avec ce premier graphique, on constate qu'il n'y a aucune corrélation entre deux variables qualitatives. 
+
+```{r}
+pairs.panels(data)
+```
+
+* Dans ce second graphique, on peut en déduire qu'il n'y a aucune corrélation entre toutes les variables. 
+* On peut supposer que toutes les variables peuvent être utilisé dans le modèle. 
+
+## Questions
+
+### Question 1
+
+Tout d'abord, nous allons modifier la variable "age" pour la mettre en variable catégorielle. Nous avons choisi de séparer la population en 3 classes d'âge: les jeunes(moins de 30 ans), les adultes(entre 30 et 60 ans) et les vieux (plus de 60 ans). Elles ont été choisies de la sorte car ces trois classes d'âge ne consomment pas de la même manière.
+
+```{r}
+food$age[food$age<30]<-1
+food$age[food$age>60]<-3
+food$age[food$age%in% c(30:60)]<-2
+food$age=as.factor(food$age)
+levels(food$age)[c(1,2,3)]<-c("Moins de 30 ans", "Entre 30 et 60 ans", "Plus de 60 ans")
+```
+
+Ensuite, on décide de mettre la variable "size" en variable dummy en la séparant, avec d'un coté les familles nombreuses (supérieur ou égale à 6 personnes) et de l'autre les moins nombreuses (inférieur à 6 personnes). Et nous décidons de laisser la variable "town" en numérique. 
+```{r}
+food$size[food$size<6]<-0
+food$size[food$size>=6]<-1
+food$size=as.factor(food$size)
+attach(food)
+str(food)
+```
+
+ Pour commencer, nous allons partir de l'équation de départ : 
+ $$wfood_i= \beta_0 + \beta_1 totexp_i + \varepsilon_i$$
+ 
+ 
+Pour cette première regression, nous décidons de rajouter des variables au modèle de départ: 
+$$wfood_i= \beta_0 + \beta_1 totexp_i + \beta_2 size_i + \beta_3 town_i + \varepsilon_i$$
+```{r}
+reg1<-lm(wfood~totexp+size+town)
+summary(reg1)
+```
+* Nous observons que le $R^2$ de ce modèle est égal à 0.3169 et que toutes nos variables sont significatives. 
+* La variable "size" est positive, ce qui veut dire que la constante égale à $\beta_0+\beta_2$ sera supérieur à la constante $\beta_0$. C'est-à-dire que le modèle avec une famille nombreuse aura une constante supérieure à celle moins nombreuse. 
+* Les deux autres variables non dummy, sont toutes les deux négatives. On les expliquera par la suite. 
+
+Pour notre second modèle, nous décidons de mettre celui ci: 
+$$wfood_i= \beta_0 + \beta_1 totexp_i + \beta_2 size_i + \beta_3 town_i+ \beta_4 age_i + \varepsilon_i$$
+
+```{r}
+reg2<-lm(wfood~totexp+size+town+age)
+summary(reg2)
+```
+
+* Nous observons que "size" et les deux catégories d'âge ont des coefficients positifs, ce qui veut dire que la constatante est $\beta_0 + \beta_2 + \beta_4$ (un individu de plus de 30 ans et une famille nombreuse) est nettement supérieur à $\beta_0$ (individu de moins de 60 ans et famille peu nombreuse). On constate que si l'individu a plus de 60 ans, la constante sera encore plus élevée.
+* Pour la variable "totexp", le coefficient est négatif, il peut donc être interprété de la manière suivante: plus les dépenses augmentent, plus la part allouée à l'alimentation diminue
+* Et pour la variable "town", le coefficient est également négatif donc plus un ménage vit dans une grande ville, plus la part dédiée à l'alimentation sera faible. 
+* Nous décidons de conserver ce modèle pour le moment car le $R^2$ (0.3352) est supérieur au précédent, tous les coefficients sont significatifs et ce modèle prend en compte plus d'éléments.
+
+
+### Question 2
+
+Pour cette question nous, allons comparé deux modèles avec des interactions. 
+
+La premier est: 
+$$wfood_i= \beta_0 + \beta_1 totexp_i + \beta_2 (totexp_i*size_i) +\beta_3 town_i + \varepsilon_i$$
+Ce modèle met en interaction "totexp" et "size". Avec ceci nous pourront voir comment la taille de la famille en interaction avec les dépenses jouent sur la part allouée à l'alimentation.
+```{r}
+reg3<-lm(wfood~totexp+totexp:size+town)
+summary(reg3)
+```
+* Le $R^2$ de ce modèle est très légérement plus faible que les modèles précédents mais on trouve que ce modèle nous montre plus d'éléments.
+* Pour les variables "town" et "totexp", il s'agit de la même interprétation que dans le modèle précédent. 
+* la variable en interaction peut être expliqué de deux façons: par le calcul et par la théorie. 
+**Mathématiquement**
+* si size =1 alors :
+$$wfood_i= \beta_0 + (\beta_1 + \beta_2) totexp_i +\beta_3 town_i + \varepsilon_i$$ 
+* si size =0 alors :
+$$wfood_i= \beta_0 + \beta_1 totexp_i +\beta_3 town_i + \varepsilon_i$$
+* Comme le coefficient est positif :
+$$\beta_1 + \beta_2 > \beta_1$$
+
+**Théoriquement**
+
+A dépense totale égale, une personne ayant une famille nombreuse va allouée une part plus importante à l'alimentation, qu'une personne ayant une famille moins nombreuse. 
+
+Le second modèle est: 
+$$wfood_i= \beta_0 + \beta_1 totexp_i + \beta_2 (totexp_i*size_i)+ \beta_3 (totexp_i*age_i) +\beta_4 town_i + \varepsilon_i$$
+Nous avons décidé de garder le modèle prédédent car il nous semblait intéressant. Pour ce modèle, nous avons juste rajouter un interaction "totexp" et "age".
+
+```{r}
+reg4<-lm(wfood~totexp+totexp:size+totexp:age+town, data=food)
+summary(reg4)
+```
+
+On peut voir dans ce modèle que les trois variables en interaction sont positives, c'est à dire qu'une personne avec une grande famille et ayant plus de 30 ans va avoir une part de ses dépenses allouées à l'alimentation plus élevées qu'une personne qui a moins de 30 ans. On constate également que si la personne a plus de 60 ans, cette part sera encore plus élevée.A contrario, une personne "jeune" et avec une famille peu nombreuse, va moins consacrer ses dépenses à l'alimentation. Ceci peut s'expliquer par plusieurs points: 
+
+1. Une famille nombreuse peut pratiquer moins de loisir car cela coûte relativement cher. Elle va donc consacrer une part plus importante aux choses essentielles, c'est-à-dire la nourriture. 
+2. Les personnes "jeunes" vont plus sortir, donc plus consommer de loisir et vont donc avoir des dépenses plus importantes. A dépense égale, un jeune consomme moins d'alimentation.
+3. Entre 30 et 60 ans, les personnes fondent généralement une famille, ce qui augmente le nombre de personne dans le ménage et donc la part des dépenses allouées à l'alimentation augmente.  
+
+Nous décidons de conserver ce modèle car le $R^2$ nous semble correcte au vu des autres modèles testés. De plus, tous les coefficients sont significatifs  donc le modèle nous semble bien être estimé. 
+
+### Question 3
+
+On décide de créer une nouvelle variable appelée “dépense” qui sera le produit de “wfood” et “totexp”, ce qui représente les dépenses allouées pour l’alimentation. Tout comme “totexp”, on met la variable “depense” en logarithme afin de voir comment les dépenses varient en pourcentage.
+
+```{r}
+food$ltotexp<- log(totexp)
+food$ldepense<-log(wfood*totexp)
+attach(food)
+```
+
+Afin de bien estimer notre modèle, on cherche à savoir si il existe une corrélation entre “ldepense” et “ltotexp”.
+```{r}
+cor(ldepense,ltotexp,method = "pearson")
+```
+On peut voir que le coefficient de corrélation est de 0.7 donc il n’y a pas d’importante corrélation entre les deux variables, on peut donc les utiliser ensemble.
+
+Nous avons créé le modèle suivant :
+$$ldepense_i= \beta_0 + \beta_1 ltotexp_i + \beta_2 (ltotexp_i*size_i)+ \beta_3 (ltotexp_i*age_i) +\beta_4 town_i + \varepsilon_i$$
+```{r}
+reg5<-lm(ldepense~ltotexp+ltotexp:size+ltotexp:age+town)
+summary(reg5)
+```
+
+Tout d’abord, nous constatons que le $R^2$ (0.52) est nettement supérieur à ceux des modèles précédents et que tous les coefficients sont significatifs.
+
+**Interprétation :**
+
+* Le coefficient "ltotexp" signifie que l'individu est jeune et vit dans un ménage de moins de 6 personnes. Ce coefficient est donc composé des variables de référence. Il s'interprète de la manière suivante: si les dépenses totales augmentent de 1% alors les dépenses allouées à l'alimentation augmenteront de 0.59%. 
+* Pour les personnes entre 30 et 60 ans et un petit ménage, l'augmentation sera de 0.61%. Pour ceux de 60 et plus, l'augmentation sera quasiment similaire à celle de la classe d'âge inférieure. 
+* D’après Engel, plus les revenus augmentent, plus la part allouée à l’alimentation diminue. On peut supposer qu’une personne ayant un meilleur revenu, dépensera plus et donc sa part liée à l’alimentation sera faible. Dans notre cas, on voit que les coefficients sont tous compris entre 0 et 1, ce qui signifie que plus les dépenses totales augmentent, plus les dépenses liées à l'alimentation augmenteront mais de moins en moins vite. 
+
+* Pour la variable size, on peut constater que les ménages contenants plus de personnes vont avoir une part liée à l’alimentation plus importante.Ce qui signifie, par exemple pour un individu avec un âge situé entre 30 et 60 ans et une grande famille, que si les dépenses totales augmentent de 1%, les dépensent liées à l'alimentation augmenteront de 0.63%. Alors qu'il augmenterait que de 0.61% dans l'autre cas.
+
+###Question 4
+Nous avons décidé de conserver trois modèles :
+
+1. $wfood_i= \beta_0 + \beta_1 totexp_i + \beta_2 (totexp_i*size_i) +\beta_3 town_i + \varepsilon_i$
+2. $wfood_i= \beta_0 + \beta_1 totexp_i + \beta_2 (totexp_i*size_i)+ \beta_3 (totexp_i*age_i) +\beta_4 town_i + \varepsilon_i$
+3. $ldepense_i= \beta_0 + \beta_1 ltotexp_i + \beta_2 (ltotexp_i*size_i)+ \beta_3 (ltotexp_i*age_i) +\beta_4 town_i + \varepsilon_i$
+
+Tout d'abord, nous allons représenter la normalité (graphiques de gauche) et la variation des résidus (graphiques à droite) pour chaque modèle.
+```{r}
+par(mfrow=c(3,2))
+qqPlot(reg2)
+residualPlot(reg2)
+qqPlot(reg4)
+residualPlot(reg4)
+qqPlot(reg5)
+residualPlot(reg5)
+```
+Dans les premiers modèles, les regressions suivent des lois normales alors que la troisième non. Les trois modèles de gauche nous montrent que la variation des résidus n'est pas constante. 
+
+**1er modèle**
+
+Interessons-nous à la régression qui a été choisis dans la question 1.
+Nous allons dans un premier temps réaliser un Breush Pagan test afin de savoir si notre modèle est hétéroscédastique et si oui, s'il a une forte hétérosédasticité ou non.
+
+```{r}
+reg2<- lm(wfood~totexp+age+size+town)
+bptest(reg2)
+```
+On voit que la p-value du BP test est nettement inférieur à 0.05. On rejette donc l'hypothèse H0 et le modèle est hétéroscédastique.
+
+
+Grâce à la commande coeftest on va obtenir les ecarts types robustes. 
+```{r}
+coeftest(reg2, vcov = vcovHC(reg2, "HC1"))
+summary(reg2)
+```
+
+Les écarts types robustes produits par coeftest(·) sont légèrement différents des écarts types non robustes. En effet on voit que les tous les écarts type ont faiblement diminué à l'exception de totexp qui a lui augmenté. 
+
+
+Nous allons maintenant corrigé l'hétéroscédasticité présent dans notre modèle.
+
+```{r}
+food$residu1<-reg2$residuals
+attach(food)
+varfunc.ols1 <- lm(log(residu1^2) ~ ltotexp, data = food)
+food$varfunc1 <- exp(varfunc.ols1$fitted.values)
+reg2bis <- lm(wfood~ totexp+town+size+age, weights = 1/sqrt(varfunc1), data = food)
+summary(reg2bis)
+```
+Le $R^2$ a augmenté très légèrement en passant de 0.3352 à 0.3357, on peut donc  interpréter ce changement graphiquement.
+
+```{r}
+ggplot(data = food, aes(y = wfood, x = totexp)) + geom_point(col = 'grey',cex=0.05)+ geom_abline(slope = reg2$coefficients[2], intercept = reg2$coefficients[1], col = 'red')+
+ geom_abline(slope = reg2bis$coefficients[2], intercept = reg2bis$coefficients[1], col = 'blue')+
+  theme_minimal()
+```
+
+On voit ici qu'une droite rouge qui correspond à modèle hétorescédastique (reg2), tandis que la bleue, elle, correspond à notre nouvelle regression corrigée (reg2bis).
+On peut voir sur ce graphique que la droite bleue a une constante plus petite que notre reg4 et une pente plus grande.
+
+**2ème modèle**
+
+On s'intéresse maintenant à notre deuxième regression (reg4). Comme il a été fait précédemment, nous allons tester l'hétéroscédasticité.
+```{r}
+reg4<-lm(wfood~totexp:size+totexp:age+totexp+town)
+bptest(reg4)
+```
+
+On remarque aussi la présence d'hétéroscédasticité avec une p-value de $2.2e^{-16}$. L'hypothèse H0 d'homoscédasticité est rejeté, donc il y a de l'hétéroscédasticité.
+
+```{r}
+coeftest(reg4, vcov = vcovHC(reg4, "HC1"))
+summary(reg4)
+```
+Ici on peut voir que tous les écarts types robustes ont augmentés par rapport à notre modèle estimé (reg4).
+
+```{r}
+food$resi2<- reg4$residuals
+varfunc.ols2 <- lm(log(resi2^2) ~ ltotexp, data = food)
+food$varfunc2 <- exp(varfunc.ols2$fitted.values)
+food.gls2 <- lm(wfood~ totexp:size+totexp:age+totexp+town, weights = 1/sqrt(varfunc2), data = food)
+summary(food.gls2)
+summary(reg4)
+```
+On remarque, ici, que le $R^2$ de notre régression corrigé à légèrement augmenté en passant de 0.3259 à 0.328 et la p-value reste toujours la même.
+
+
+```{r}
+ggplot(data = food, aes(y = wfood, x = totexp)) + geom_point(col = 'grey',cex=0.05)+ geom_abline(slope = reg4$coefficients[2], intercept = reg4$coefficients[1], col = 'red')+
+ geom_abline(slope = food.gls2$coefficients[2], intercept = food.gls2$coefficients[1], col = 'blue')+
+  theme_minimal()
+```
+Comme dans la première regression, la droite rouge correspond à notre regression hétéroscédastique non corrigée, tandis que la bleue, correspond à notre nouvelle regression corrigée.
+On peut voir sur ce graphique que la droite bleue a une constante plus petite que notre reg4 et une pente plus grande.
+
+**3ème modèle**
+
+Pour finir interessons nous à la troisième regression (reg 5).
+
+```{r}
+reg5<- lm(ldepense~ltotexp+ltotexp:size+ltotexp:age+town)
+bptest(reg5)
+```
+
+D'après le Brush Pagan test on voit une p-value de $2.03e^{-14}$ nettement inférieur à 0.05 comme les modèles précédents. Dons il y a une forte hétéroscédasticité dans notre modèle.
+
+```{r}
+coeftest(reg5, vcoV = vcovHC(reg5,"HC1"))
+summary(reg5)
+```
+
+Nous allons essayer d'améliorer le modèle:
+```{r}
+food$resi3<-reg5$residuals
+varfunc.ols3 <- lm(log(resi3^2) ~ ltotexp+ltotexp:size+ltotexp:age+town, data = food)
+food$varfunc3 <- exp(varfunc.ols3$fitted.values)
+reg5bis<- lm(ldepense~ ltotexp+ltotexp:size+ltotexp:age+town, weights = 1/sqrt(varfunc3), data = food)
+summary(reg5bis)
+```
+
+On peut voir que la $R^2$ a augmenté. Il est passée de 0.5205 à 0.5477 une fois l'hétéroscédasticité corrigée. La p-value, reste la même.
+
+```{r}
+ggplot(data = food, aes(y = ldepense, x = ltotexp)) + geom_point(col = 'grey',cex=0.05) +geom_abline(slope = reg5$coefficients[2], intercept = reg5$coefficients[1], col = 'red')+
+ geom_abline(slope = reg5bis$coefficients[2], intercept = reg5bis$coefficients[1], col = 'blue')+
+  theme_minimal()
+```
+Les droites se confondent pratiquement mais la droite de la regression hétéroscédastique a une constante légerement plus haute et un coefficient directeur plus faible que la régression modifiée.
+
+###Conclusion
+
+Après avoir étudié les 3 régressions choisit, on peut conclure que la meilleure est la troisième régression (reg5). En effet on a pu voir dans un premier temps dans les questions 1,2 et 3 que la troisième regression (reg5) avait un coefficient de corrélation plus élevé que les 2 autres régressions. Le modèle était donc mieux estimé.
+Dans un second temps, après avoir testé l'hétéroscédasticité sur nos modèles, nous avons pu remarquer la présence d'une forte hétéroscédasticité dans ceux-ci grâce au Brush Pagan Test. Une fois l'hétéroscédasticité corrigée partiellement (l'hétéroscédasticité étant trop importante nous n'avons pas pu la corrigée entièrement et donc rendre le modèle homoscédastique) nous pouvons voir que le $R^2$ de la troisième régression corrigée (reg5bis) a plus augmenté que les 2 autres et est donc plus important que celles-ci. On peut donc retenir comme régression la reg5bis car il s'agit du modèle le mieux estimé corrigé de l'hétéroscédasticité.
+
+
+
